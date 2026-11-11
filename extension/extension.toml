@@ -1,0 +1,10 @@
+id = "xray"
+name = "xray"
+version = "0.1.0"
+schema_version = 1
+authors = ["Simon Smejkal <simon.smejkal@seznam.cz>"]
+description = "Runs a Python function and shows its values line by line, per loop iteration."
+
+[language_servers.xray]
+name = "xray"
+languages = ["Python"]

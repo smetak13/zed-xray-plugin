@@ -1,0 +1,18 @@
+[package]
+name = "xray"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "xray"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "io-std", "time", "sync", "io-util", "process", "fs"] }
+tower-lsp-server = "0.23.0"
+tempfile = "3"
