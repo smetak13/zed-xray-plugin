@@ -1,12 +1,12 @@
 # xray — design
 
-xray is a Zed extension that shows what happens inside one Python function, line by line and loop iteration by loop iteration. It is meant for understanding algorithmic code: which values each line produces, and how they evolve across iterations of (nested) loops and recursive calls.
+xray is a Zed extension that shows what happens inside one Python, JavaScript or TypeScript function, line by line and loop iteration by loop iteration. It is meant for understanding algorithmic code: which values each line produces, and how they evolve across iterations of (nested) loops and recursive calls.
 
 Zed behavior referenced here (code lens rendering, refresh, click handling) was researched for tldc; see `~/Work/projects/tldc/docs/zed-research.md`.
 
 ## 1. Scope
 
-- Language: **Python 3.12+** only.
+- Languages: **Python 3.12+**, and **JavaScript / TypeScript** on Node (section 12). Sections 3–4 describe Python; section 12 lists what differs for JS/TS.
 - One function at a time, the one containing the cursor.
 - Everything user-facing (lens titles, menu entries, messages) is in English.
 
@@ -18,11 +18,13 @@ Same layout as tldc. No root Cargo workspace; the two crates build independently
 |---|---|
 | `server/` | Rust crate, binary `xray`, LSP over stdio |
 | `server/src/tracer.py` | Python tracer, embedded in the binary with `include_str!` |
+| `server/src/js/` | JS/TS parsing, instrumentation and static analysis (`oxc`) |
+| `server/src/tracer.js` | JS runtime: records probe events into a trace, embedded with `include_str!` |
 | `extension/` | Zed extension crate (cdylib, `wasm32-wasip2`), `zed_extension_api` 0.7.0 |
 | `docs/` | design, install notes |
-| `docs/samples/` | Python fixtures used by the tests |
+| `docs/samples/` | Python, JavaScript and TypeScript fixtures used by the tests |
 
-Extension id, language server id and name: `xray`. The language server is registered for the `Python` language.
+Extension id, language server id and name: `xray`. The language server is registered for the `Python`, `JavaScript` and `TypeScript` languages. The server picks the tracer from the `languageId` of `didOpen` (`python`, `javascript`, `typescript`).
 
 ## 3. Triggering a run
 
@@ -198,6 +200,7 @@ All arguments are positional. `executeCommand` returns `null` immediately; the r
 ```json
 {
   "python": null,
+  "node": null,
   "timeoutMs": 5000,
   "maxSteps": 100000
 }
@@ -217,14 +220,69 @@ Zed needs `"code_lens": "on"` in the user settings, or no lens is rendered.
   - a function raising an exception
   - an infinite loop (step limit and timeout)
   - a function using a helper and a module constant from the same file, plus a stdlib import
+- The same scenarios run with `node` against JS/TS fixtures: `bubble.js`, `nested_while.js`, `fib.ts` (recursion, type annotations), `raises.js`, `forever.js`, `helpers.ts` (helper, module constant, a local import and a `node:` import), `no_call.js`, `leetcode.js` (`var twoSum = function …`).
 - Tests go through the server's public interface: run a trace, move cursors, read the lenses.
+- The JS instrumentation additionally has unit tests: source in, probes and analysis out.
 
 ## 11. Out of scope for v1
 
-- Languages other than Python.
+- Languages other than Python, JavaScript and TypeScript.
+- JSX/TSX, `async` functions, generators, methods, TS `enum` and `namespace`.
+- Node alternatives (Bun, Deno).
 - A keybinding for running (would need a Zed task plus a side channel into the server).
 - Live re-run while typing.
 - Showing `print` output.
 - Highlighting changed elements inside collections.
 - Jump to first/last iteration.
 - Operand values of conditions (would need re-evaluation).
+
+## 12. JavaScript and TypeScript
+
+Everything from section 5 on (view state, lenses, commands, lifecycle) is shared with Python. The JS tracer produces the same JSON (`server/src/trace.rs`). This section lists what differs from sections 3 and 4.
+
+### 12.1 Pipeline
+
+`sys.settrace` has no Node equivalent, so the function is instrumented before it runs:
+
+1. The server parses the document with `oxc` (JS, or TS for `languageId` `typescript`). A syntax error is reported as a tracer failure with the first parser message and its line.
+2. It finds the function and the call (12.2), builds the setup module (12.3), inserts probes into the function body (12.4) and computes the static analysis: loops, assigned names per line and condition bodies, in the same shape as `Analysis` in `tracer.py`.
+3. It starts `node -e <tracer.js>` with the file path, output path, timeout and step limit as arguments, and sends the instrumented source plus the analysis as JSON on stdin.
+4. `tracer.js` strips TS types with `module.stripTypeScriptTypes` (strip mode, so positions are kept), runs the code as an ES module from a `data:` URL, and builds the trace from the probe events. The tree building is a port of `FrameRecorder` / `Recorder` from `tracer.py`: merging repeated events of one line, inferring conditions from the next line, iteration labels, recursion depth, exception deduplication.
+5. A resolve hook (`module.registerHooks`) resolves relative imports of the `data:` module against the real file, so local imports work. `require`, `__filename` and `__dirname` are provided through a shim (`createRequire`).
+
+The user code's stdout and stderr are discarded, as for Python. Node is `initialization_options.node`, otherwise `node` on `PATH`.
+
+### 12.2 Finding the function and the call
+
+- Function: a top-level `function f`, `export function f`, or `const|let|var f = function … | (…) => …` (also with `export`) whose range contains the cursor line. `async` functions and generators are reported as `xray: async functions and generators are not supported`.
+- Call: the first top-level statement, other than the function's own declaration, containing a call `f(…)` with `f` as a plain identifier, e.g. `f(…)`, `console.log(f(…))`, `const r = f(…)`.
+- Without a call the template `f(/* a */, /* b */);` (parameter names; destructured parameters as `/* arg1 */`) is inserted after the function as in 3.2.
+
+### 12.3 What is executed
+
+Top-level statements kept: `import`, function and class declarations, `const`/`let`/`var` declarations, TS `type`/`interface`/`declare`, and `export` forms of these. Every other top-level statement and the found call statement are replaced with spaces (newlines kept), so line numbers do not move. The call statement runs at the end of the module. The code runs as an ES module, so in strict mode.
+
+### 12.4 Probes
+
+Only the selected function's own body is instrumented. Nested functions, arrow functions and class bodies inside it are not, like comprehensions in Python: their result is visible on the line that uses them. `snap` is `() => ({a, b, …})` listing every binding in scope at that point whose declaration starts before it (parameters, `var`, and `let`/`const`/`function` of enclosing blocks). If a snapshot throws, the event is recorded without values.
+
+| Construct | Probe | Python counterpart |
+|---|---|---|
+| every statement | `__xray.line(N, snap);` before it | `line` event |
+| function body | `__xray.enter(snap); try { … } catch (e) { __xray.raise(e); throw e } finally { __xray.exit(snap) }` | `call`, `exception`, `return` |
+| `return expr` | `return __xray.ret(expr, snap)` | return value |
+| `if (c)`, `while (c)`, `for (…; c; …)` | test becomes `(__xray.line(N, snap), c)`; a `for` without a test gets one returning `true` | header line event |
+| `for … of`, `for … in` | `__xray.line(N, snap);` first in the body | header line event |
+| `do … while` | `__xray.line(N, snap);` first in the body, N = the `do` line | header line event, no condition |
+| body without braces | wrapped in `{ … }` | — |
+
+N is the 0-based line of the statement's start. Iteration labels: `for … of`/`in` targets, and for `for (let i = 0; …)` the names declared in the initializer; `while` and `do` loops have none. Assigned names (4.2): `=`, compound assignment, `++`/`--`, declarations, destructuring and `for` targets.
+
+Values are formatted with `util.inspect` on one line (`breakLength: Infinity`), then shortened as in 6.1.
+
+### 12.5 Differences from Python
+
+- A block-scoped variable stops being reported after its block ends.
+- `do … while` loops show no condition outcome.
+- TS `enum` and `namespace` fail, because Node only strips types.
+- The step limit and the timeout are checked in `__xray.line`; code without probes (helpers) is stopped by the server killing the process (3.5).
