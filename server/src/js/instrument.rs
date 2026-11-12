@@ -160,7 +160,7 @@ impl<'s> Instrumenter<'s> {
         collector.names
     }
 
-    fn wrap_test(&mut self, test: &Expression, line: u32) {
+    fn wrap_with_probe(&mut self, test: &Expression, line: u32) {
         let span = test.span();
         let probe = format!("(__xray.line({line}, {}), ", self.snap());
         self.edits.insert(span.start, probe);
@@ -318,7 +318,7 @@ impl<'s> Instrumenter<'s> {
             Statement::IfStatement(branch) => {
                 let names = Self::assigned_in(|names| names.visit_expression(&branch.test));
                 self.assign(line, names);
-                self.wrap_test(&branch.test, line);
+                self.wrap_with_probe(&branch.test, line);
                 self.record_condition(line, &branch.consequent);
                 self.body(&branch.consequent);
                 if let Some(alternate) = &branch.alternate {
@@ -328,7 +328,7 @@ impl<'s> Instrumenter<'s> {
             Statement::WhileStatement(loop_) => {
                 let names = Self::assigned_in(|names| names.visit_expression(&loop_.test));
                 self.assign(line, names);
-                self.wrap_test(&loop_.test, line);
+                self.wrap_with_probe(&loop_.test, line);
                 self.record_condition(line, &loop_.body);
                 self.record_loop(statement, &loop_.body, None);
                 self.body(&loop_.body);
@@ -436,8 +436,11 @@ impl<'s> Instrumenter<'s> {
         });
         names.extend(targets.iter().flatten().cloned());
         self.assign(line, names);
+        if let Some(update) = &loop_.update {
+            self.wrap_with_probe(update, line);
+        }
         match &loop_.test {
-            Some(test) => self.wrap_test(test, line),
+            Some(test) => self.wrap_with_probe(test, line),
             None => {
                 let search_from = match &loop_.init {
                     Some(init) => init.span().end,

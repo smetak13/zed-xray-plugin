@@ -272,6 +272,7 @@ Only the selected function's own body is instrumented. Nested functions, arrow f
 | function body | `__xray.enter(snap); try { … } catch (e) { __xray.raise(e); throw e } finally { __xray.exit(snap) }` | `call`, `exception`, `return` |
 | `return expr` | `return __xray.ret(expr, snap)` | return value |
 | `if (c)`, `while (c)`, `for (…; c; …)` | test becomes `(__xray.line(N, snap), c)`; a `for` without a test gets one returning `true` | header line event |
+| `for (…; …; u)` | update becomes `(__xray.line(N, snap), u)`, so the loop variable changes on the header line, not on the last body line | header line event |
 | `for … of`, `for … in` | `__xray.line(N, snap);` first in the body | header line event |
 | `do … while` | `__xray.line(N, snap);` first in the body, N = the `do` line | header line event, no condition |
 | body without braces | wrapped in `{ … }` | — |

@@ -5,9 +5,11 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
+use crate::js::{self, Prepared};
 use crate::trace::Outcome;
 
 const TRACER: &str = include_str!("tracer.py");
+const JS_TRACER: &str = include_str!("tracer.js");
 const KILL_GRACE: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Clone)]
@@ -25,9 +27,29 @@ impl Default for Limits {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Language {
+    #[default]
+    Python,
+    JavaScript,
+    TypeScript,
+}
+
+impl Language {
+    pub fn from_id(id: &str) -> Option<Language> {
+        match id {
+            "python" => Some(Language::Python),
+            "javascript" => Some(Language::JavaScript),
+            "typescript" => Some(Language::TypeScript),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceRequest {
-    pub python: PathBuf,
+    pub language: Language,
+    pub program: PathBuf,
     pub path: PathBuf,
     pub source: String,
     pub line: u32,
@@ -42,17 +64,62 @@ fn failed(message: impl Into<String>) -> Outcome {
 }
 
 pub async fn run(request: TraceRequest) -> Outcome {
-    let output = match tempfile::NamedTempFile::new() {
-        Ok(file) => file,
-        Err(error) => return failed(format!("cannot create a temp file: {error}")),
-    };
-    let spawned = Command::new(&request.python)
+    match request.language {
+        Language::Python => run_python(request).await,
+        Language::JavaScript | Language::TypeScript => run_node(request).await,
+    }
+}
+
+async fn run_python(request: TraceRequest) -> Outcome {
+    let mut command = Command::new(&request.program);
+    command
         .arg("-I")
         .arg("-c")
         .arg(TRACER)
         .arg(&request.path)
         .arg(request.line.to_string())
-        .arg(request.name.as_deref().unwrap_or(""))
+        .arg(request.name.as_deref().unwrap_or(""));
+    execute(command, request.source.clone(), &request).await
+}
+
+async fn run_node(request: TraceRequest) -> Outcome {
+    let typescript = request.language == Language::TypeScript;
+    let prepared = js::prepare(
+        &request.source,
+        typescript,
+        request.line,
+        request.name.as_deref(),
+    );
+    let input = match prepared {
+        Prepared::Ready {
+            code,
+            analysis,
+            function,
+        } => serde_json::json!({
+            "code": code,
+            "typescript": typescript,
+            "analysis": analysis,
+            "function": {
+                "name": function.name,
+                "line": function.line,
+                "end_line": function.end_line,
+            },
+        }),
+        Prepared::NoFunction => return Outcome::NoFunction,
+        Prepared::NoCall(template) => return Outcome::NoCall { template },
+        Prepared::Failed(message) => return failed(message),
+    };
+    let mut command = Command::new(&request.program);
+    command.arg("-e").arg(JS_TRACER).arg(&request.path);
+    execute(command, input.to_string(), &request).await
+}
+
+async fn execute(mut command: Command, input: String, request: &TraceRequest) -> Outcome {
+    let output = match tempfile::NamedTempFile::new() {
+        Ok(file) => file,
+        Err(error) => return failed(format!("cannot create a temp file: {error}")),
+    };
+    let spawned = command
         .arg(output.path())
         .arg(request.limits.timeout.as_millis().to_string())
         .arg(request.limits.max_steps.to_string())
@@ -66,14 +133,13 @@ pub async fn run(request: TraceRequest) -> Outcome {
         Err(error) => {
             return failed(format!(
                 "cannot start {}: {error}",
-                request.python.display()
+                request.program.display()
             ));
         }
     };
     let mut stdin = child.stdin.take().expect("piped stdin");
-    let source = request.source.clone();
     tokio::spawn(async move {
-        let _ = stdin.write_all(source.as_bytes()).await;
+        let _ = stdin.write_all(input.as_bytes()).await;
     });
     let mut stderr = child.stderr.take().expect("piped stderr");
     let errors = tokio::spawn(async move {

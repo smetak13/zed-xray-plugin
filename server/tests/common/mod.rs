@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use xray::trace::Outcome;
-use xray::tracer::{self, Limits, TraceRequest};
+use xray::tracer::{self, Language, Limits, TraceRequest};
 
 pub fn sample_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -18,8 +18,14 @@ pub async fn trace_sample(name: &str, line: u32) -> Outcome {
 pub async fn trace_sample_with(name: &str, line: u32, limits: Limits) -> Outcome {
     let path = sample_path(name);
     let source = std::fs::read_to_string(&path).unwrap();
+    let (language, program) = match path.extension().and_then(|extension| extension.to_str()) {
+        Some("js") => (Language::JavaScript, "node"),
+        Some("ts") => (Language::TypeScript, "node"),
+        _ => (Language::Python, "python3"),
+    };
     tracer::run(TraceRequest {
-        python: PathBuf::from("python3"),
+        language,
+        program: PathBuf::from(program),
         path,
         source,
         line,

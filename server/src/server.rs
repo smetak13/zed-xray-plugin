@@ -19,7 +19,7 @@ use tower_lsp_server::{Client, LanguageServer};
 use crate::config::Config;
 use crate::text;
 use crate::trace::{Outcome, Stop, Template};
-use crate::tracer::{self, TraceRequest};
+use crate::tracer::{self, Language, TraceRequest};
 use crate::view::{Action, View};
 
 const RUN: &str = "xray.run";
@@ -240,7 +240,8 @@ impl Core {
             return;
         };
         let request = TraceRequest {
-            python: self.python(),
+            language: Language::Python,
+            program: self.python(),
             path,
             source,
             line,

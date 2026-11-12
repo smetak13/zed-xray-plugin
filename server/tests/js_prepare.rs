@@ -158,7 +158,7 @@ fn wraps_tests_of_if_while_and_for() {
     assert_contains(&code, "while ((__xray.line(2, () => ({n})), n))");
     assert_contains(
         &code,
-        "for (let i = 0; (__xray.line(3, () => ({n, i})), i < n); i++)",
+        "for (let i = 0; (__xray.line(3, () => ({n, i})), i < n); (__xray.line(3, () => ({n, i})), i++))",
     );
     assert_contains(&code, "for (;(__xray.line(4, () => ({n})), true);)");
 }
