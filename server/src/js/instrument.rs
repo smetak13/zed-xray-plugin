@@ -20,8 +20,14 @@ pub struct Instrumenter<'s> {
     source: &'s str,
     lines: &'s LineIndex,
     edits: &'s mut Edits,
-    scopes: Vec<Vec<String>>,
+    scopes: Vec<Scope>,
     pub analysis: Analysis,
+}
+
+#[derive(Default)]
+struct Scope {
+    declared: Vec<String>,
+    pending: Vec<String>,
 }
 
 #[derive(Default)]
@@ -72,6 +78,26 @@ fn declared_names(declaration: &VariableDeclaration) -> Vec<String> {
         .collect()
 }
 
+fn lexical_names(statements: &[Statement]) -> Vec<String> {
+    statements
+        .iter()
+        .flat_map(|statement| match statement {
+            Statement::VariableDeclaration(declaration)
+                if declaration.kind != VariableDeclarationKind::Var =>
+            {
+                declared_names(declaration)
+            }
+            Statement::FunctionDeclaration(function) => {
+                function.id.iter().map(|id| id.name.to_string()).collect()
+            }
+            Statement::ClassDeclaration(class) => {
+                class.id.iter().map(|id| id.name.to_string()).collect()
+            }
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
 fn statements_of<'p, 'a>(statement: &'p Statement<'a>) -> &'p [Statement<'a>] {
     match statement {
         Statement::BlockStatement(block) => &block.body,
@@ -106,13 +132,25 @@ impl<'s> Instrumenter<'s> {
     }
 
     fn snap(&self) -> String {
+        let mut shadowed: BTreeSet<&str> = BTreeSet::new();
+        let mut visible: Vec<Vec<&str>> = Vec::new();
+        for scope in self.scopes.iter().rev() {
+            visible.push(
+                scope
+                    .declared
+                    .iter()
+                    .map(String::as_str)
+                    .filter(|name| !shadowed.contains(name))
+                    .collect(),
+            );
+            shadowed.extend(scope.pending.iter().map(String::as_str));
+        }
         let mut seen = BTreeSet::new();
-        let names: Vec<&str> = self
-            .scopes
-            .iter()
+        let names: Vec<&str> = visible
+            .into_iter()
+            .rev()
             .flatten()
-            .filter(|name| seen.insert(name.as_str()))
-            .map(String::as_str)
+            .filter(|name| seen.insert(*name))
             .collect();
         format!("() => ({{{}}})", names.join(", "))
     }
@@ -135,7 +173,9 @@ impl<'s> Instrumenter<'s> {
         } else {
             self.scopes.last_mut()
         };
-        scope.expect("inside a function").extend(names);
+        let scope = scope.expect("inside a function");
+        scope.pending.retain(|name| !names.contains(name));
+        scope.declared.extend(names);
     }
 
     fn declare_variables(&mut self, declaration: &VariableDeclaration) {
@@ -215,8 +255,10 @@ impl<'s> Instrumenter<'s> {
         body_end: u32,
         statements: &[Statement],
     ) {
-        self.scopes
-            .push(params.iter_bindings().flat_map(binding_names).collect());
+        self.scopes.push(Scope {
+            declared: params.iter_bindings().flat_map(binding_names).collect(),
+            pending: Vec::new(),
+        });
         self.edits
             .insert(body_start, format!("__xray.enter({}); try {{", self.snap()));
         self.statements(statements);
@@ -228,8 +270,10 @@ impl<'s> Instrumenter<'s> {
     }
 
     pub fn arrow_expression(&mut self, params: &FormalParameters, expression: &Expression) {
-        self.scopes
-            .push(params.iter_bindings().flat_map(binding_names).collect());
+        self.scopes.push(Scope {
+            declared: params.iter_bindings().flat_map(binding_names).collect(),
+            pending: Vec::new(),
+        });
         let span = expression.span();
         let snap = self.snap();
         let line = self.line(span.start);
@@ -251,7 +295,10 @@ impl<'s> Instrumenter<'s> {
     }
 
     fn block(&mut self, block: &BlockStatement) {
-        self.scopes.push(Vec::new());
+        self.scopes.push(Scope {
+            declared: Vec::new(),
+            pending: lexical_names(&block.body),
+        });
         self.statements(&block.body);
         self.scopes.pop();
     }
@@ -263,7 +310,7 @@ impl<'s> Instrumenter<'s> {
             other => {
                 let span = other.span();
                 self.edits.insert(span.start, "{ ".to_string());
-                self.scopes.push(Vec::new());
+                self.scopes.push(Scope::default());
                 self.statement(other);
                 self.scopes.pop();
                 self.edits.insert(span.end, " }".to_string());
@@ -281,7 +328,7 @@ impl<'s> Instrumenter<'s> {
                 let span = other.span();
                 self.edits
                     .insert(span.start, format!("{{ {}", self.probe(line)));
-                self.scopes.push(Vec::new());
+                self.scopes.push(Scope::default());
                 if !matches!(other, Statement::EmptyStatement(_)) {
                     self.statement(other);
                 }
@@ -348,7 +395,14 @@ impl<'s> Instrumenter<'s> {
             Statement::SwitchStatement(switch) => {
                 let names = Self::assigned_in(|names| names.visit_expression(&switch.discriminant));
                 self.assign(line, names);
-                self.scopes.push(Vec::new());
+                self.scopes.push(Scope {
+                    declared: Vec::new(),
+                    pending: switch
+                        .cases
+                        .iter()
+                        .flat_map(|case| lexical_names(&case.consequent))
+                        .collect(),
+                });
                 for case in &switch.cases {
                     self.statements(&case.consequent);
                 }
@@ -362,7 +416,10 @@ impl<'s> Instrumenter<'s> {
                         .as_ref()
                         .map(|param| binding_names(&param.pattern))
                         .unwrap_or_default();
-                    self.scopes.push(names);
+                    self.scopes.push(Scope {
+                        declared: names,
+                        pending: Vec::new(),
+                    });
                     self.block(&handler.body);
                     self.scopes.pop();
                 }
@@ -377,8 +434,12 @@ impl<'s> Instrumenter<'s> {
                         let names = Self::assigned_in(|names| names.visit_expression(argument));
                         self.assign(line, names);
                         let span = argument.span();
-                        self.edits.insert(span.start, "__xray.ret(".to_string());
-                        self.edits.insert(span.end, format!(", {snap})"));
+                        let (open, close) = match argument {
+                            Expression::SequenceExpression(_) => ("(", ")"),
+                            _ => ("", ""),
+                        };
+                        self.edits.insert(span.start, format!("__xray.ret({open}"));
+                        self.edits.insert(span.end, format!("{close}, {snap})"));
                     }
                     None => self.edits.insert(
                         ret.span.start + "return".len() as u32,
@@ -394,7 +455,7 @@ impl<'s> Instrumenter<'s> {
             }
             Statement::FunctionDeclaration(function) => {
                 if let Some(id) = &function.id {
-                    self.declare(vec![id.name.to_string()], true);
+                    self.declare(vec![id.name.to_string()], false);
                 }
             }
             Statement::ClassDeclaration(class) => {
@@ -410,7 +471,7 @@ impl<'s> Instrumenter<'s> {
     }
 
     fn for_statement(&mut self, statement: &Statement, loop_: &ForStatement, line: u32) {
-        self.scopes.push(Vec::new());
+        self.scopes.push(Scope::default());
         let targets = match &loop_.init {
             Some(ForStatementInit::VariableDeclaration(declaration)) => {
                 self.declare_variables(declaration);
@@ -468,7 +529,7 @@ impl<'s> Instrumenter<'s> {
         body: &Statement,
         line: u32,
     ) {
-        self.scopes.push(Vec::new());
+        self.scopes.push(Scope::default());
         let targets: Vec<String> = match left {
             ForStatementLeft::VariableDeclaration(declaration) => {
                 self.declare_variables(declaration);

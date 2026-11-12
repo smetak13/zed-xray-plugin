@@ -194,3 +194,35 @@ async fn missing_node_reports_cannot_start() {
         other => panic!("expected Failed, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_returned_sequence_keeps_the_function_result() {
+    let trace = traced(trace_sample("edge_cases.js", 0).await);
+
+    let events = &trace.calls[0].scope.events;
+    assert_eq!(events.last().unwrap().returned.as_deref(), Some("3"));
+}
+
+#[tokio::test]
+async fn a_function_declared_in_a_block_keeps_later_values() {
+    let trace = traced(trace_sample("edge_cases.js", 5).await);
+
+    let events = &trace.calls[0].scope.events;
+    assert!(events.contains(&event(11, &[("a", "2")])), "{events:?}");
+}
+
+#[tokio::test]
+async fn a_shadowing_let_keeps_values_earlier_in_the_block() {
+    let trace = traced(trace_sample("edge_cases.js", 15).await);
+
+    let events = &trace.calls[0].scope.events;
+    assert_eq!(events[0], event(16, &[("y", "2")]));
+    assert_eq!(events[1], event(18, &[("y", "4")]));
+}
+
+#[tokio::test]
+async fn a_live_timer_in_the_file_does_not_block_the_result() {
+    let trace = traced(trace_sample("timer.js", 2).await);
+
+    assert_eq!(trace.calls[0].scope.events, vec![returned(3, "3")]);
+}

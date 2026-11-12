@@ -239,4 +239,5 @@ function run(input) {
 
 run(JSON.parse(fs.readFileSync(0, "utf8"))).then((result) => {
   fs.writeFileSync(output, JSON.stringify(result));
+  process.exit(0);
 });
