@@ -160,9 +160,14 @@ impl LspClient {
     pub async fn open(&mut self, path: &std::path::Path, text: &str) {
         self.uri = format!("file://{}", path.display());
         let uri = self.uri.clone();
+        let language_id = match path.extension().and_then(|extension| extension.to_str()) {
+            Some("js") => "javascript",
+            Some("ts") => "typescript",
+            _ => "python",
+        };
         self.notify(
             "textDocument/didOpen",
-            json!({ "textDocument": { "uri": uri, "languageId": "python", "version": 1, "text": text } }),
+            json!({ "textDocument": { "uri": uri, "languageId": language_id, "version": 1, "text": text } }),
         )
         .await;
     }

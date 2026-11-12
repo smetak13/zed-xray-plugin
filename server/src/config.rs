@@ -10,6 +10,7 @@ use crate::tracer::Limits;
 #[serde(rename_all = "camelCase", default)]
 pub struct Config {
     pub python: Option<PathBuf>,
+    pub node: Option<PathBuf>,
     pub timeout_ms: u64,
     pub max_steps: u64,
 }
@@ -18,6 +19,7 @@ impl Default for Config {
     fn default() -> Config {
         Config {
             python: None,
+            node: None,
             timeout_ms: 5000,
             max_steps: 100_000,
         }

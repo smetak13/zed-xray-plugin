@@ -167,3 +167,47 @@ async fn hitting_the_step_limit_shows_a_warning_above_the_def() {
         .lenses_with(0, "⚠ xray: stopped after 20 steps")
         .await;
 }
+
+#[tokio::test]
+async fn running_a_javascript_file_shows_values_below_the_lines() {
+    let mut client = opened("bubble.js").await;
+
+    client.run_at(0).await;
+
+    client.lenses_with(2, "n = 3").await;
+    client.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_typescript_function_without_a_call_gets_a_template_inserted() {
+    let mut client = opened("no_call.ts").await;
+
+    client.run_at(1).await;
+
+    let edits = client.received_until("workspace/applyEdit").await;
+    let uri = client.uri.clone();
+    assert_eq!(
+        edits[0]["edit"]["changes"][uri.as_str()][0]["newText"],
+        json!("\n\n\nadd(/* a */, /* b */);")
+    );
+}
+
+#[tokio::test]
+async fn a_missing_node_shows_a_warning() {
+    let mut client = LspClient::start(json!({ "node": "/nonexistent/node" })).await;
+    let path = sample_path("bubble.js");
+    client
+        .open(&path, &std::fs::read_to_string(&path).unwrap())
+        .await;
+
+    client.run_at(0).await;
+
+    client
+        .lenses_until(|lenses| {
+            lenses.iter().any(|lens| {
+                lens.title
+                    .starts_with("⚠ xray: cannot start /nonexistent/node")
+            })
+        })
+        .await;
+}

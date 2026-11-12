@@ -39,6 +39,7 @@ const COMMANDS: [&str; 7] = [
     NOOP,
 ];
 const DEFAULT_PYTHON: &str = "python3";
+const DEFAULT_NODE: &str = "node";
 
 enum RunState {
     Running,
@@ -54,6 +55,7 @@ struct Run {
 #[derive(Default)]
 struct Document {
     text: String,
+    language: Language,
     run: Option<Run>,
 }
 
@@ -200,6 +202,19 @@ impl Core {
             .unwrap_or_else(|| PathBuf::from(DEFAULT_PYTHON))
     }
 
+    fn node(&self) -> PathBuf {
+        self.config()
+            .node
+            .unwrap_or_else(|| PathBuf::from(DEFAULT_NODE))
+    }
+
+    fn program(&self, language: Language) -> PathBuf {
+        match language {
+            Language::Python => self.python(),
+            Language::JavaScript | Language::TypeScript => self.node(),
+        }
+    }
+
     fn refresh(&self) {
         let client = self.client.clone();
         tokio::spawn(async move {
@@ -213,6 +228,7 @@ impl Core {
             return;
         };
         let source = document.text.clone();
+        let language = document.language;
         match &mut document.run {
             Some(run) if !matches!(run.state, RunState::Running) && name.is_some() => {
                 run.line = line;
@@ -240,8 +256,8 @@ impl Core {
             return;
         };
         let request = TraceRequest {
-            language: Language::Python,
-            program: self.python(),
+            language,
+            program: self.program(language),
             path,
             source,
             line,
@@ -429,13 +445,11 @@ impl LanguageServer for Server {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let document = params.text_document;
-        self.core
-            .documents
-            .lock()
-            .unwrap()
-            .entry(document.uri.to_string())
-            .or_default()
-            .text = document.text;
+        let mut documents = self.core.documents.lock().unwrap();
+        let entry = documents.entry(document.uri.to_string()).or_default();
+        entry.text = document.text;
+        entry.language = Language::from_id(&document.language_id).unwrap_or_default();
+        drop(documents);
         self.core.refresh();
     }
 

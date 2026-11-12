@@ -296,7 +296,6 @@ impl<'s> Instrumenter<'s> {
             statement,
             Statement::IfStatement(_)
                 | Statement::WhileStatement(_)
-                | Statement::ForStatement(_)
                 | Statement::DoWhileStatement(_)
                 | Statement::BlockStatement(_)
                 | Statement::TryStatement(_)

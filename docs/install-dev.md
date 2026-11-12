@@ -1,6 +1,6 @@
 # xray — dev install (Linux, Omarchy)
 
-Prerequisites: Rust with the `wasm32-wasip2` target, Python 3.12+, Zed.
+Prerequisites: Rust with the `wasm32-wasip2` target, Python 3.12+, Node 23+ (for JavaScript and TypeScript), Zed.
 
 ## 1. Build the server
 
@@ -31,6 +31,7 @@ Open settings (`zed: open settings`) and add:
 ```
 
 - `"code_lens": "on"` is required, otherwise no lens is rendered.
+- `initialization_options.node` overrides the Node binary used for JavaScript and TypeScript files (default `node` on `PATH`).
 - `initialization_options.python` overrides the interpreter. Without it xray uses `.venv/bin/python` in the worktree root, then `$VIRTUAL_ENV/bin/python`, then `python3`.
 
 ## 3. Install the extension

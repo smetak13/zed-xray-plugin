@@ -242,3 +242,12 @@ fn while_loops_have_no_targets_and_a_condition() {
     assert_eq!(analysis.conditions[&1], (2, 2));
     assert!(analysis.assigned[&2].contains("n"));
 }
+
+#[test]
+fn probes_a_for_statement_before_its_initializer_runs() {
+    let source = "function f(n) {\n  for (let i = 0; i < n; i++) {}\n}\nf(1);\n";
+
+    let code = code_of(prepare(source, false, 0, None));
+
+    assert_contains(&code, "__xray.line(1, () => ({n})); for (let i = 0;");
+}

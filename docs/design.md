@@ -268,7 +268,7 @@ Only the selected function's own body is instrumented. Nested functions, arrow f
 
 | Construct | Probe | Python counterpart |
 |---|---|---|
-| every statement | `__xray.line(N, snap);` before it | `line` event |
+| every statement except `if`, `while`, `do`, blocks and `try` (a `for` gets one too, so its initializer is not attributed to the previous line) | `__xray.line(N, snap);` before it | `line` event |
 | function body | `__xray.enter(snap); try { … } catch (e) { __xray.raise(e); throw e } finally { __xray.exit(snap) }` | `call`, `exception`, `return` |
 | `return expr` | `return __xray.ret(expr, snap)` | return value |
 | `if (c)`, `while (c)`, `for (…; c; …)` | test becomes `(__xray.line(N, snap), c)`; a `for` without a test gets one returning `true` | header line event |
