@@ -1,13 +1,19 @@
 mod analysis;
+mod edits;
+mod instrument;
 mod lines;
 mod locate;
 
 use oxc_allocator::Allocator;
+use oxc_ast::ast::Statement;
 use oxc_parser::Parser;
-use oxc_span::SourceType;
+use oxc_span::{GetSpan, SourceType};
 
 pub use analysis::{Analysis, LoopInfo};
+use edits::Edits;
+use instrument::Instrumenter;
 use lines::LineIndex;
+use locate::{Body, Target};
 
 use crate::trace::{Function, Template};
 
@@ -36,13 +42,16 @@ pub fn prepare(source: &str, typescript: bool, line: u32, name: Option<&str>) ->
     let parsed = Parser::new(&allocator, source, source_type).parse();
     let lines = LineIndex::new(source);
     if let Some(error) = parsed.diagnostics.first() {
-        let offset = error.labels.first().map_or(0, |label| label.offset() as u32);
-        return Prepared::Failed(format!("line {}: {}", lines.line(offset) + 1, error.message));
+        let offset = error.labels.first().map_or(0, |label| label.offset());
+        return Prepared::Failed(format!(
+            "line {}: {}",
+            lines.line(offset) + 1,
+            error.message
+        ));
     }
     let program = &parsed.program;
-    let contains = |span: oxc_span::Span| {
-        lines.line(span.start) <= line && line <= lines.end_line(span.end)
-    };
+    let contains =
+        |span: oxc_span::Span| lines.line(span.start) <= line && line <= lines.end_line(span.end);
     let Some(target) = locate::find_function(program, contains, name) else {
         return Prepared::NoFunction;
     };
@@ -54,15 +63,62 @@ pub fn prepare(source: &str, typescript: bool, line: u32, name: Option<&str>) ->
         line: lines.line(target.statement.start),
         end_line: lines.end_line(target.statement.end),
     };
-    if locate::find_call(program, &target).is_none() {
+    let Some(call) = locate::find_call(program, &target) else {
         return Prepared::NoCall(Template {
             after_line: function.end_line,
             text: locate::call_template(&target),
         });
+    };
+    let mut edits = Edits::default();
+    for statement in &program.body {
+        if !is_setup(statement) || statement.span() == call.span() {
+            edits.blank(statement.span(), source);
+        }
     }
+    let analysis = instrument(source, &lines, &mut edits, &target);
+    let call_text = &source[call.span().start as usize..call.span().end as usize];
+    let mut code = edits.apply(source);
+    if !code.ends_with('\n') {
+        code.push('\n');
+    }
+    code.push_str(call_text);
+    code.push('\n');
     Prepared::Ready {
-        code: source.to_string(),
-        analysis: Analysis::default(),
+        code,
+        analysis,
         function,
     }
+}
+
+fn is_setup(statement: &Statement) -> bool {
+    statement.as_declaration().is_some() || statement.as_module_declaration().is_some()
+}
+
+fn instrument(source: &str, lines: &LineIndex, edits: &mut Edits, target: &Target) -> Analysis {
+    let mut instrumenter = Instrumenter::new(source, lines, edits);
+    match target.body {
+        Body::Function(function) => {
+            if let Some(body) = &function.body {
+                instrumenter.function(
+                    &function.params,
+                    body.span.start + 1,
+                    body.span.end - 1,
+                    &body.statements,
+                );
+            }
+        }
+        Body::Arrow(arrow) => match arrow.get_function_body() {
+            Some(body) => instrumenter.function(
+                &arrow.params,
+                body.span.start + 1,
+                body.span.end - 1,
+                &body.statements,
+            ),
+            None => {
+                let expression = arrow.get_expression().expect("an expression body");
+                instrumenter.arrow_expression(&arrow.params, expression);
+            }
+        },
+    }
+    instrumenter.analysis
 }

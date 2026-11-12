@@ -83,7 +83,11 @@ pub fn find_function<'p, 'a>(
         })
         .collect();
     let at_cursor = targets.iter().position(|target| contains(target.statement));
-    let by_name = || targets.iter().position(|target| Some(target.name.as_str()) == name);
+    let by_name = || {
+        targets
+            .iter()
+            .position(|target| Some(target.name.as_str()) == name)
+    };
     let index = at_cursor.or_else(by_name)?;
     targets.into_iter().nth(index)
 }
@@ -121,13 +125,18 @@ pub fn call_template(target: &Target) -> String {
     let names: Vec<String> = params
         .items
         .iter()
-        .map(|param| param.pattern.get_identifier_name().map(|name| name.to_string()))
-        .chain(
-            params
-                .rest
-                .iter()
-                .map(|rest| rest.rest.argument.get_identifier_name().map(|name| name.to_string())),
-        )
+        .map(|param| {
+            param
+                .pattern
+                .get_identifier_name()
+                .map(|name| name.to_string())
+        })
+        .chain(params.rest.iter().map(|rest| {
+            rest.rest
+                .argument
+                .get_identifier_name()
+                .map(|name| name.to_string())
+        }))
         .enumerate()
         .map(|(index, name)| name.unwrap_or_else(|| format!("arg{}", index + 1)))
         .collect();
